@@ -1,11 +1,7 @@
 package com.d8gmyself.parallel;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 
 /**
  * <pre>
@@ -17,14 +13,16 @@ import java.util.concurrent.TimeoutException;
  */
 public class ParallelFlow {
 
-    private final TaskNodeExecutor nodeExecutor;
     private final Executor executor;
     private final long flowTimeoutMs;
+    private final long defaultTaskTimeoutMs;
+    private final TaskLifecycleListener taskLifecycleListener;
 
     private ParallelFlow(Executor executor, TaskLifecycleListener listener, long defaultTaskTimeoutMs, long flowTimeoutMs) {
-        this.nodeExecutor = new TaskNodeExecutor(listener, defaultTaskTimeoutMs);
+        this.defaultTaskTimeoutMs = defaultTaskTimeoutMs;
         this.executor = executor;
         this.flowTimeoutMs = flowTimeoutMs;
+        this.taskLifecycleListener = listener;
     }
 
     // ======================== Static simple API ========================
@@ -146,11 +144,11 @@ public class ParallelFlow {
         // 2. Topological sort (Kahn's algorithm)
         List<TaskNode<?>> sorted = topologicalSort(allNodes);
 
-        // 3. Build CompletableFuture DAG
-        Map<String, CompletableFuture<?>> futures = new LinkedHashMap<>();
+        // 3. Build TaskNodeFuture DAG
+        Map<String, TaskNodeFuture<?>> futures = new LinkedHashMap<>();
 
         for (TaskNode<?> node : sorted) {
-            CompletableFuture<?> future = buildFuture(node, ctx, futures);
+            TaskNodeFuture<?> future = buildFuture(node, ctx, futures);
             futures.put(node.getName(), future);
         }
 
@@ -159,7 +157,7 @@ public class ParallelFlow {
         Throwable exception = null;
         boolean success = false;
 
-        CompletableFuture<?> targetFuture = futures.get(target.getName());
+        CompletableFuture<?> targetFuture = futures.get(target.getName()).getFuture();
         try {
             if (flowTimeoutMs > 0) {
                 resultValue = (O) targetFuture.get(flowTimeoutMs, TimeUnit.MILLISECONDS);
@@ -341,22 +339,21 @@ public class ParallelFlow {
     // ======================== Future building ========================
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private CompletableFuture<?> buildFuture(
+    private TaskNodeFuture<?> buildFuture(
             TaskNode<?> node, FlowContext ctx,
-            Map<String, CompletableFuture<?>> futures) {
+            Map<String, TaskNodeFuture<?>> futures) {
 
         Collection<TaskNode<?>> deps = node.getDependencies();
 
-        CompletableFuture<?> resultFuture = new CompletableFuture<>();
-
+        TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture((TaskNode) node, defaultTaskTimeoutMs, taskLifecycleListener);
         if (deps.isEmpty()) {
-            executor.execute(() -> nodeExecutor.execute((TaskNode) node, ctx, resultFuture));
-            return resultFuture;
+            executor.execute(() -> taskNodeFuture.execute(ctx));
+            return taskNodeFuture;
         }
 
         List<CompletableFuture<?>> depFutures = new ArrayList<>();
         for (TaskNode<?> dep : deps) {
-            CompletableFuture<?> depFuture = futures.get(dep.getName());
+            CompletableFuture<?> depFuture = futures.get(dep.getName()).getFuture();
             if (dep.isOptional()) {
                 //如果是弱依赖，那忽略异常
                 depFuture = depFuture.handle((result, ex) -> result);
@@ -368,12 +365,10 @@ public class ParallelFlow {
         CompletableFuture<Void> allDeps = CompletableFuture.allOf(depArray);
         //如果allDeps中存在没有fallback的强依赖抛出异常，为了确保resultFuture可以被complete，不阻断后续流程，这里需要处理exceptionally逻辑
         allDeps.exceptionally(throwable -> {
-                    if (node.completeFailure(0, 0, throwable)) {
-                        resultFuture.completeExceptionally(throwable);
-                    }
+                    taskNodeFuture.completeFailure(0, 0, throwable, 0);
                     return null;
                 })
-                .thenRunAsync(() -> nodeExecutor.execute((TaskNode) node, ctx, resultFuture), executor);
-        return resultFuture;
+                .thenRunAsync(() -> taskNodeFuture.execute(ctx), executor);
+        return taskNodeFuture;
     }
 }

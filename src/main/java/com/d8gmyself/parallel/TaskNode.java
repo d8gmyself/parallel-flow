@@ -199,7 +199,7 @@ public class TaskNode<O> {
         return executed && success;
     }
 
-    // ======================== Completion methods (package-private, called by TaskNodeExecutor) ========================
+    // ======================== Completion methods (package-private, only called by TaskNodeFuture) ========================
 
     boolean isCompleted() {
         return completed.get();
