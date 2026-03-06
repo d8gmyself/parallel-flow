@@ -5,10 +5,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 
 /**
+ * <pre>
  * 并行任务节点，包括元信息和运行状态，每次执行前应该新建，禁止复用
- * <p>
  * 元数据通过Builder构建，构建后不可变；运行时状态由executor写入
- * </p>
+ * 关于强弱依赖的表达，统一在节点上做表达，而不是边上，因为：
+ *     C 强依赖 A
+ *     B 弱依赖 A
+ * 最终结果只要强依赖C，那A节点就是强依赖的，区分边级别的依赖意义不大，不如简单提现整个flow维度对当前TaskNode是强依赖还是弱依赖
+ * 如果A是强依赖，B、C是弱依赖，B、C都弱依赖A，最终结果依赖B+C，这种情况下，只要最终结果不在依赖中明确依赖A，那理论上不会影响整个流程
+ * 简单来说就是，表达在节点上的强弱依赖，在传递依赖和直接依赖两种情况下，含义不同
+ * </pre>
  * @param <O> 节点返回值
  */
 public class TaskNode<O> {
@@ -108,6 +114,10 @@ public class TaskNode<O> {
             this.action = action;
         }
 
+        /**
+         * 设置taskNode的超时时间，这里的超时时间指taskNode内部逻辑执行的超时时间，而不是taskNode在整个Flow中的超时时间
+         * Flow的超时时间由Flow自己的flowTimeoutMs控制
+         */
         public Builder<O> timeout(long timeoutMs) {
             this.timeoutMs = Math.max(0, timeoutMs);
             return this;
@@ -138,6 +148,13 @@ public class TaskNode<O> {
             return optional(null);
         }
 
+        /**
+         * <pre>
+         * 标记为弱依赖
+         * 在没有单独设置fallback，设置defaultValue为fallback的结果
+         * 在没有单独设置timeoutDefault的情况下，设置defaultValue为timeoutDefaultValue
+         * </pre>
+         */
         public Builder<O> optional(O defaultValue) {
             this.dependencyType = DependencyType.OPTIONAL;
             if (this.fallback == null) {
@@ -255,11 +272,11 @@ public class TaskNode<O> {
         return true;
     }
 
-    boolean completeTimeoutDefault(O value, long durationMs, Throwable exception) {
+    boolean completeTimeoutDefault(long durationMs, Throwable exception) {
         if (!completed.compareAndSet(false, true)) {
             return false;
         }
-        this.resultValue = value;
+        this.resultValue = this.timeoutDefaultValue;
         this.success = true;
         this.fallbackUsed = true;
         this.timedOut = true;

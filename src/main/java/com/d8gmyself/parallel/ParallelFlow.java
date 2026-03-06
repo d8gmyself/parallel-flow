@@ -9,6 +9,9 @@ import java.util.concurrent.*;
  *
  * 重点关注：
  * <li>关注TaskNode的行为中是否嵌套了ParallelFlow或者其它异步逻辑，避免线程池死锁</li>
+ * <li>每个taskNode的默认超时时间在不指定的情况下为10秒</li>
+ * <li>flow的默认超时时间在不指定的情况下为30秒</li>
+ * <li>关于executor的选择，重点要关注RejectedExecutionHandler，如果选用DiscardPolicy这一类的，会导致TaskNode有可能被直接丢弃，完全靠flow超时兜底</li>
  * </pre>
  */
 public class ParallelFlow {
@@ -19,6 +22,12 @@ public class ParallelFlow {
     private final TaskLifecycleListener taskLifecycleListener;
 
     private ParallelFlow(Executor executor, TaskLifecycleListener listener, long defaultTaskTimeoutMs, long flowTimeoutMs) {
+        if (defaultTaskTimeoutMs <= 0) {
+            defaultTaskTimeoutMs = TimeUnit.SECONDS.toMillis(10);
+        }
+        if (flowTimeoutMs <= 0) {
+            flowTimeoutMs = TimeUnit.SECONDS.toMillis(30);
+        }
         this.defaultTaskTimeoutMs = defaultTaskTimeoutMs;
         this.executor = executor;
         this.flowTimeoutMs = flowTimeoutMs;
@@ -159,16 +168,12 @@ public class ParallelFlow {
 
         CompletableFuture<?> targetFuture = futures.get(target.getName()).getFuture();
         try {
-            if (flowTimeoutMs > 0) {
-                resultValue = (O) targetFuture.get(flowTimeoutMs, TimeUnit.MILLISECONDS);
-            } else {
-                resultValue = (O) targetFuture.get();
-            }
+            resultValue = (O) targetFuture.get(flowTimeoutMs, TimeUnit.MILLISECONDS);
             success = true;
         } catch (TimeoutException e) {
             exception = new ParallelFlowException("Flow timed out after " + flowTimeoutMs + "ms");
-            for (TaskNode<?> node : allNodes) {
-                node.completeTimeout(0, exception);
+            for (TaskNodeFuture<?> taskNodeFuture : futures.values()) {
+                taskNodeFuture.completeException(exception);
             }
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
@@ -181,6 +186,14 @@ public class ParallelFlow {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             exception = new ParallelFlowException("Execution interrupted", e);
+        } catch (Throwable t) {
+            if (t instanceof ParallelFlowException) {
+                exception = t;
+            } else if (t.getCause() instanceof ParallelFlowException) {
+                exception = t.getCause();
+            } else {
+                exception = new ParallelFlowException("Task '" + target.getName() + "' failed", t);
+            }
         }
 
         // 5. Snapshot all node states
@@ -347,7 +360,12 @@ public class ParallelFlow {
 
         TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture((TaskNode) node, defaultTaskTimeoutMs, taskLifecycleListener);
         if (deps.isEmpty()) {
-            executor.execute(() -> taskNodeFuture.execute(ctx));
+            try {
+                executor.execute(() -> taskNodeFuture.execute(ctx));
+            } catch (Throwable throwable) {
+                //线程池拒绝兜底
+                taskNodeFuture.completeException(throwable);
+            }
             return taskNodeFuture;
         }
 
@@ -363,7 +381,11 @@ public class ParallelFlow {
 
         CompletableFuture<?>[] depArray = depFutures.toArray(new CompletableFuture<?>[0]);
         CompletableFuture<Void> allDeps = CompletableFuture.allOf(depArray);
-        //如果allDeps中存在没有fallback的强依赖抛出异常，为了确保resultFuture可以被complete，不阻断后续流程，这里需要处理exceptionally逻辑
+        /*
+         * 如果allDeps中存在没有fallback的强依赖抛出异常，为了确保resultFuture可以被complete，不阻断后续流程，这里需要处理exceptionally逻辑
+         * 这里不采用whenCompleteAsync的写法是为了不处理额外的RejectedExecutionException问题导致问题更加复杂
+         * exceptionally中提前将taskNodeFuture进行了complete，在后面的taskNodeFuture.execute中会直接return
+         */
         allDeps.exceptionally(throwable -> {
                     taskNodeFuture.completeFailure(0, 0, throwable, 0);
                     return null;

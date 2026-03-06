@@ -48,8 +48,7 @@ class TaskNodeFuture<O> {
                         new TimeoutException());
 
                 if (taskNode.hasTimeoutDefault()) {
-                    O defaultResult = taskNode.getTimeoutDefaultValue();
-                    completeTimeoutDefault(defaultResult, effectiveTimeout, timeoutEx);
+                    completeTimeoutDefault(effectiveTimeout, timeoutEx);
                     return;
                 }
                 completeTimeout(effectiveTimeout, timeoutEx);
@@ -177,13 +176,23 @@ class TaskNodeFuture<O> {
         return false;
     }
 
-    boolean completeTimeoutDefault(O value, long durationMs, Throwable exception) {
-        if (taskNode.completeTimeoutDefault(value, durationMs, exception)) {
-            future.complete(value);
-            fireEvent(taskNode.getName(), durationMs, 0, exception, value, EventType.FALLBACK);
+    boolean completeTimeoutDefault(long durationMs, Throwable exception) {
+        if (taskNode.completeTimeoutDefault(durationMs, exception)) {
+            future.complete(taskNode.getTimeoutDefaultValue());
+            fireEvent(taskNode.getName(), durationMs, 0, exception, taskNode.getTimeoutDefaultValue(), EventType.FALLBACK);
             return true;
         }
         return false;
+    }
+
+    /**
+     * 仅用在Flow维度超时以及线程池饱和策略下的complete
+     */
+    boolean completeException(Throwable exception) {
+        if (taskNode.hasTimeoutDefault()) {
+            return completeTimeoutDefault(0, exception);
+        }
+        return completeFailure(0, 0, exception, 0);
     }
 
     CompletableFuture<O> getFuture() {
