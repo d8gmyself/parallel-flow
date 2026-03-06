@@ -1,5 +1,8 @@
 package com.d8gmyself.parallel;
 
+/**
+ * 主要还是用来做日志记录之类的，禁止过重的长耗时实现，会影响超时线程和工作线程的效率
+ */
 public interface TaskLifecycleListener {
 
     class TaskEvent {

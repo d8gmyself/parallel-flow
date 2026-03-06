@@ -16,6 +16,9 @@ import java.util.concurrent.*;
  */
 public class ParallelFlow {
 
+    //静态方法默认使用
+    private static final ParallelFlow DEFAULT = new ParallelFlow(ForkJoinPool.commonPool(), null, 0, 0);
+
     private final Executor executor;
     private final long flowTimeoutMs;
     private final long defaultTaskTimeoutMs;
@@ -28,61 +31,33 @@ public class ParallelFlow {
         if (flowTimeoutMs <= 0) {
             flowTimeoutMs = TimeUnit.SECONDS.toMillis(30);
         }
+        if (executor == null) {
+            executor = ForkJoinPool.commonPool();
+        }
         this.defaultTaskTimeoutMs = defaultTaskTimeoutMs;
-        this.executor = executor;
         this.flowTimeoutMs = flowTimeoutMs;
+        this.executor = executor;
         this.taskLifecycleListener = listener;
     }
 
     // ======================== Static simple API ========================
 
-    public static <O> O execute(TaskNode<O> target) {
-        return execute(target, null, null, 0, null);
+    public static <O> O start(TaskNode<O> target) {
+        return DEFAULT.run(target);
     }
 
-    public static <O> O execute(TaskNode<O> target, FlowContext ctx) {
-        return execute(target, ctx, null, 0, null);
-    }
-
-    public static <O> O execute(TaskNode<O> target, Executor executor, long defaultTaskTimeoutMs) {
-        return execute(target, null, executor, defaultTaskTimeoutMs, null);
-    }
-
-    public static <O> O execute(TaskNode<O> target, Executor executor, TaskLifecycleListener listener) {
-        return execute(target, null, executor, 0, listener);
-    }
-
-    public static <O> O execute(TaskNode<O> target, FlowContext ctx, Executor executor, long defaultTaskTimeoutMs, TaskLifecycleListener listener) {
-        return executeForResult(target, ctx, executor, defaultTaskTimeoutMs, listener).get();
+    public static <O> O start(TaskNode<O> target, FlowContext ctx) {
+        return DEFAULT.run(target, ctx);
     }
 
     // ======================== Static result API ========================
 
-    public static <O> FlowResult<O> executeForResult(TaskNode<O> target) {
-        return executeForResult(target, null, null, 0, null);
+    public static <O> FlowResult<O> tryStart(TaskNode<O> target) {
+        return DEFAULT.tryRun(target);
     }
 
-    public static <O> FlowResult<O> executeForResult(TaskNode<O> target, FlowContext ctx) {
-        return executeForResult(target, ctx, null, 0, null);
-    }
-
-    public static <O> FlowResult<O> executeForResult(TaskNode<O> target, Executor executor, long defaultTaskTimeoutMs) {
-        return executeForResult(target, null, executor, defaultTaskTimeoutMs, null);
-    }
-
-    public static <O> FlowResult<O> executeForResult(TaskNode<O> target, Executor executor, TaskLifecycleListener listener) {
-        return executeForResult(target, null, executor, 0, listener);
-    }
-
-    public static <O> FlowResult<O> executeForResult(TaskNode<O> target, FlowContext ctx, Executor executor, long defaultTaskTimeoutMs, TaskLifecycleListener listener) {
-        if (target == null) {
-            return new FlowResult<>(true, null, null, Collections.emptyMap(), "", 0);
-        }
-        executor = executor == null ? ForkJoinPool.commonPool() : executor;
-        defaultTaskTimeoutMs = Math.max(0, defaultTaskTimeoutMs);
-        ParallelFlow flow = new ParallelFlow(executor, listener, defaultTaskTimeoutMs, 0);
-        ctx = ctx == null ? new FlowContext() : ctx;
-        return flow.doRun(target, ctx);
+    public static <O> FlowResult<O> tryStart(TaskNode<O> target, FlowContext ctx) {
+        return DEFAULT.tryRun(target, ctx);
     }
 
     // ======================== Builder ========================
@@ -118,8 +93,7 @@ public class ParallelFlow {
         }
 
         public ParallelFlow build() {
-            Executor exec = executor != null ? executor : ForkJoinPool.commonPool();
-            return new ParallelFlow(exec, listener, defaultTaskTimeoutMs, flowTimeoutMs);
+            return new ParallelFlow(executor, listener, defaultTaskTimeoutMs, flowTimeoutMs);
         }
     }
 
@@ -133,11 +107,11 @@ public class ParallelFlow {
         return this.doRun(target, ctx).get();
     }
 
-    public <O> FlowResult<O> runForResult(TaskNode<O> target) {
+    public <O> FlowResult<O> tryRun(TaskNode<O> target) {
         return this.doRun(target, new FlowContext());
     }
 
-    public <O> FlowResult<O> runForResult(TaskNode<O> target, FlowContext ctx) {
+    public <O> FlowResult<O> tryRun(TaskNode<O> target, FlowContext ctx) {
         return this.doRun(target, ctx);
     }
 
@@ -172,10 +146,7 @@ public class ParallelFlow {
             success = true;
         } catch (TimeoutException e) {
             exception = new ParallelFlowException("Flow timed out after " + flowTimeoutMs + "ms");
-            for (TaskNodeFuture<?> taskNodeFuture : futures.values()) {
-                taskNodeFuture.completeException(exception);
-            }
-        } catch (java.util.concurrent.ExecutionException e) {
+        } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof ParallelFlowException) {
                 exception = cause;
@@ -196,6 +167,15 @@ public class ParallelFlow {
             }
         }
 
+        //如果target已经失败完成了，那所有futures都可以清除掉了，避免还未进入调度的node继续正常执行
+        if (!success) {
+            ParallelFlowException cancelEx = new ParallelFlowException(
+                    "Cancelled: flow did not complete successfully", exception);
+            for (TaskNodeFuture<?> taskNodeFuture : futures.values()) {
+                taskNodeFuture.completeException(cancelEx);
+            }
+        }
+
         // 5. Snapshot all node states
         Map<String, NodeState> nodeStates = new LinkedHashMap<>();
         for (TaskNode<?> node : allNodes) {
@@ -212,25 +192,15 @@ public class ParallelFlow {
     // ======================== Mermaid ========================
 
     private static String buildMermaid(List<TaskNode<?>> allNodes) {
-        StringBuilder sb = new StringBuilder("graph TD\n");
+        StringBuilder sb = new StringBuilder("graph BT\n");
 
-        Set<String> optionalNames = new LinkedHashSet<>();
         Set<String> failedNames = new LinkedHashSet<>();
-        Set<String> optionalFailedNames = new LinkedHashSet<>();
 
         // 声明节点并分类
         for (TaskNode<?> node : allNodes) {
             String name = node.getName();
             sb.append("    ").append(name).append('\n');
-
-            boolean optional = node.isOptional();
-            boolean failed = !node.isSuccess();
-
-            if (optional && failed) {
-                optionalFailedNames.add(name);
-            } else if (optional) {
-                optionalNames.add(name);
-            } else if (failed) {
+            if (!node.isSuccess()) {
                 failedNames.add(name);
             }
         }
@@ -238,34 +208,21 @@ public class ParallelFlow {
         // 画边: dependency --> dependent
         for (TaskNode<?> node : allNodes) {
             for (TaskNode<?> dep : node.getDependencies()) {
-                sb.append("    ").append(dep.getName()).append(" --> ").append(node.getName()).append('\n');
+                sb.append("    ").append(node.getName()).append(" --> ").append(dep.getName()).append('\n');
+            }
+            for (TaskNode<?> dep : node.getWeakDependencies()) {
+                sb.append("    ").append(node.getName()).append(" -.-> ").append(dep.getName()).append('\n');
             }
         }
 
-        // classDef 和 class 分配
-        boolean hasOptional = !optionalNames.isEmpty() || !optionalFailedNames.isEmpty();
-        boolean hasFailed = !failedNames.isEmpty() || !optionalFailedNames.isEmpty();
+        boolean hasFailed = !failedNames.isEmpty();
 
-        if (hasOptional) {
-            sb.append("    classDef optional stroke-dasharray: 5 5\n");
-        }
         if (hasFailed) {
             sb.append("    classDef failed stroke:#ff0000\n");
-        }
-        if (!optionalFailedNames.isEmpty()) {
-            sb.append("    classDef optionalFailed stroke:#ff0000,stroke-dasharray: 5 5\n");
-        }
-
-        for (String name : optionalNames) {
-            sb.append("    class ").append(name).append(" optional\n");
         }
         for (String name : failedNames) {
             sb.append("    class ").append(name).append(" failed\n");
         }
-        for (String name : optionalFailedNames) {
-            sb.append("    class ").append(name).append(" optionalFailed\n");
-        }
-
         return sb.toString();
     }
 
@@ -292,7 +249,7 @@ public class ParallelFlow {
             return;
         }
         visited.put(node.getName(), node);
-        for (TaskNode<?> dep : node.getDependencies()) {
+        for (TaskNode<?> dep : node.getAllDependencies()) {
             collectDfs(dep, visited, result);
         }
         result.add(node);
@@ -314,9 +271,9 @@ public class ParallelFlow {
         for (TaskNode<?> node : nodes) {
             String name = node.getName();
             nodeMap.put(name, node);
-            inDegree.put(name, node.getDependencies().size());
+            inDegree.put(name, node.getAllDependencies().size());
             successors.computeIfAbsent(name, k -> new ArrayList<>());
-            for (TaskNode<?> dep : node.getDependencies()) {
+            for (TaskNode<?> dep : node.getAllDependencies()) {
                 successors.computeIfAbsent(dep.getName(), k -> new ArrayList<>()).add(name);
             }
         }
@@ -356,7 +313,7 @@ public class ParallelFlow {
             TaskNode<?> node, FlowContext ctx,
             Map<String, TaskNodeFuture<?>> futures) {
 
-        Collection<TaskNode<?>> deps = node.getDependencies();
+        Collection<TaskNode<?>> deps = node.getAllDependencies();
 
         TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture((TaskNode) node, defaultTaskTimeoutMs, taskLifecycleListener);
         if (deps.isEmpty()) {
@@ -372,25 +329,27 @@ public class ParallelFlow {
         List<CompletableFuture<?>> depFutures = new ArrayList<>();
         for (TaskNode<?> dep : deps) {
             CompletableFuture<?> depFuture = futures.get(dep.getName()).getFuture();
-            if (dep.isOptional()) {
+            if (!node.isRequired(dep)) {
                 //如果是弱依赖，那忽略异常
                 depFuture = depFuture.handle((result, ex) -> result);
+            } else {
+                //如果是强依赖失败，直接complete taskNodeFuture
+                //如果A强依赖B弱依赖C，那只要B抛异常，那A直接按异常完成，不等C
+                depFuture = depFuture.exceptionally(throwable -> {
+                    taskNodeFuture.completeByRequiredFail(dep.getName(), throwable);
+                    return null;
+                });
             }
             depFutures.add(depFuture);
         }
 
         CompletableFuture<?>[] depArray = depFutures.toArray(new CompletableFuture<?>[0]);
         CompletableFuture<Void> allDeps = CompletableFuture.allOf(depArray);
-        /*
-         * 如果allDeps中存在没有fallback的强依赖抛出异常，为了确保resultFuture可以被complete，不阻断后续流程，这里需要处理exceptionally逻辑
-         * 这里不采用whenCompleteAsync的写法是为了不处理额外的RejectedExecutionException问题导致问题更加复杂
-         * exceptionally中提前将taskNodeFuture进行了complete，在后面的taskNodeFuture.execute中会直接return
-         */
-        allDeps.exceptionally(throwable -> {
+        allDeps.thenRunAsync(() -> taskNodeFuture.execute(ctx), executor)
+                .exceptionally(throwable -> {
                     taskNodeFuture.completeFailure(0, 0, throwable, 0);
                     return null;
-                })
-                .thenRunAsync(() -> taskNodeFuture.execute(ctx), executor);
+                });
         return taskNodeFuture;
     }
 }

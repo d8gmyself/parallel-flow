@@ -6,22 +6,18 @@ package com.d8gmyself.parallel;
 public class NodeState {
 
     private final String name;
-    private final boolean executed;
     private final boolean success;
-    private final boolean optional;
     private final boolean fallbackUsed;
     private final boolean timedOut;
     private final int actualRetryCount;
     private final long durationMs;
     private final Throwable exception;
 
-    NodeState(String name, boolean executed, boolean success, boolean optional,
+    NodeState(String name, boolean success,
               boolean fallbackUsed, boolean timedOut, int actualRetryCount,
               long durationMs, Throwable exception) {
         this.name = name;
-        this.executed = executed;
         this.success = success;
-        this.optional = optional;
         this.fallbackUsed = fallbackUsed;
         this.timedOut = timedOut;
         this.actualRetryCount = actualRetryCount;
@@ -33,16 +29,8 @@ public class NodeState {
         return name;
     }
 
-    public boolean isExecuted() {
-        return executed;
-    }
-
     public boolean isSuccess() {
-        return executed && success;
-    }
-
-    public boolean isOptional() {
-        return optional;
+        return success;
     }
 
     public boolean isFallbackUsed() {

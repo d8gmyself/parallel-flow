@@ -186,7 +186,7 @@ class TaskNodeFuture<O> {
     }
 
     /**
-     * 仅用在Flow维度超时以及线程池饱和策略下的complete
+     * 仅用在Flow维度异常结束、线程池提交task异常时complete
      */
     boolean completeException(Throwable exception) {
         if (taskNode.hasTimeoutDefault()) {
@@ -194,6 +194,18 @@ class TaskNodeFuture<O> {
         }
         return completeFailure(0, 0, exception, 0);
     }
+
+    boolean completeByRequiredFail(String depName, Throwable cause) {
+        ParallelFlowException cancelEx = new ParallelFlowException(
+                "Task '" + taskNode.getName() + "' cancelled: required dependency '" + depName + "' failed", cause);
+        if (taskNode.completeFailure(0, 0, cancelEx)) {
+            future.completeExceptionally(cancelEx);
+            fireEvent(taskNode.getName(), 0, 0, cancelEx, null, EventType.FAILURE);
+            return true;
+        }
+        return false;
+    }
+
 
     CompletableFuture<O> getFuture() {
         return future;

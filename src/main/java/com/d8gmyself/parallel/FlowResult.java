@@ -56,7 +56,7 @@ public class FlowResult<O> {
      * 返回预计算的Mermaid DAG状态图
      * <p>弱依赖节点虚线边框，失败节点红色边框，两者叠加</p>
      */
-    public String toMermaid() {
+    public String getMermaid() {
         return mermaid;
     }
 

@@ -8,12 +8,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <pre>
  * 并行任务节点，包括元信息和运行状态，每次执行前应该新建，禁止复用
  * 元数据通过Builder构建，构建后不可变；运行时状态由executor写入
- * 关于强弱依赖的表达，统一在节点上做表达，而不是边上，因为：
- *     C 强依赖 A
- *     B 弱依赖 A
- * 最终结果只要强依赖C，那A节点就是强依赖的，区分边级别的依赖意义不大，不如简单提现整个flow维度对当前TaskNode是强依赖还是弱依赖
- * 如果A是强依赖，B、C是弱依赖，B、C都弱依赖A，最终结果依赖B+C，这种情况下，只要最终结果不在依赖中明确依赖A，那理论上不会影响整个流程
- * 简单来说就是，表达在节点上的强弱依赖，在传递依赖和直接依赖两种情况下，含义不同
+ * 状态数据仅可写入一次，比如先超时，后完成，那完成的结果也直接丢弃，最终按超时记
+ * 如果一个TaskNode同时存在dependencies和weakDependencies中，那优先认为是强依赖
+ * 如果action或者fallback中有长IO操作，自行控制IO的超时逻辑，taskNode的timeout机制不会进行interrupt，避免误打断
+ *
+ * 关于成功的判定：仅在抛出异常的时候才算失败，核心其实就两种失败情况
+ *   - 超时 & 无超时默认值
+ *   - action失败 & (无fallback | fallback失败)
  * </pre>
  * @param <O> 节点返回值
  */
@@ -29,22 +30,18 @@ public class TaskNode<O> {
         R apply(Throwable ex) throws Exception;
     }
 
-    public enum DependencyType {
-        REQUIRED,
-        OPTIONAL
-    }
-
     // ======================== Definition (immutable) ========================
 
     private final String name;
     private final ContextFunction<O> action;
-    private final DependencyType dependencyType;
     private final long timeoutMs;
     private final int maxRetries;
     private final FallbackFunction<O> fallback;
     private final boolean hasTimeoutDefault;
     private final O timeoutDefaultValue;
     private final Collection<TaskNode<?>> dependencies;
+    private final Collection<TaskNode<?>> weakDependencies;
+    private final Collection<TaskNode<?>> allDependencies;
     private final CircuitBreaker circuitBreaker;
 
     // ======================== Runtime state (written once by executor or timeout thread) ========================
@@ -56,7 +53,7 @@ public class TaskNode<O> {
     /**
      * 用于保证状态可见性，默认false，task完成后，在更新完所有状态后，记得execute设置为true
      */
-    private volatile boolean executed;
+    private volatile boolean stateFlag;
     private volatile boolean success;
     private volatile boolean fallbackUsed;
     private volatile boolean timedOut;
@@ -68,13 +65,19 @@ public class TaskNode<O> {
     private TaskNode(Builder<O> b) {
         this.name = b.name;
         this.action = b.action;
-        this.dependencyType = b.dependencyType;
         this.timeoutMs = b.timeoutMs;
         this.maxRetries = b.maxRetries;
         this.fallback = b.fallback;
         this.hasTimeoutDefault = b.hasTimeoutDefault;
         this.timeoutDefaultValue = b.timeoutDefaultValue;
-        this.dependencies = Collections.unmodifiableCollection(new HashSet<>(b.dependencies));
+        HashSet<TaskNode<?>> strongDeps = new HashSet<>(b.dependencies);
+        HashSet<TaskNode<?>> weakDeps = new HashSet<>(b.weakDependencies);
+        weakDeps.removeAll(strongDeps);
+        this.dependencies = Collections.unmodifiableCollection(strongDeps);
+        this.weakDependencies = Collections.unmodifiableCollection(weakDeps);
+        HashSet<TaskNode<?>> allDependencies = new HashSet<>(strongDeps);
+        allDependencies.addAll(weakDeps);
+        this.allDependencies = Collections.unmodifiableCollection(allDependencies);
         this.circuitBreaker = b.circuitBreaker;
     }
 
@@ -84,7 +87,7 @@ public class TaskNode<O> {
      * 快捷构建，等价于 {@code TaskNode.<O>builder(name, action).build()}
      */
     public static <O> TaskNode<O> of(String name, ContextFunction<O> action) {
-        return TaskNode.<O>builder(name, action).build();
+        return TaskNode.builder(name, action).build();
     }
 
     public static <O> Builder<O> builder(String name, ContextFunction<O> action) {
@@ -100,13 +103,13 @@ public class TaskNode<O> {
         private final String name;
         private final ContextFunction<O> action;
 
-        private DependencyType dependencyType = DependencyType.REQUIRED;
         private long timeoutMs;
         private int maxRetries;
         private FallbackFunction<O> fallback;
         private boolean hasTimeoutDefault;
         private O timeoutDefaultValue;
         private final Collection<TaskNode<?>> dependencies = new HashSet<>();
+        private final Collection<TaskNode<?>> weakDependencies = new HashSet<>();
         private CircuitBreaker circuitBreaker;
 
         private Builder(String name, ContextFunction<O> action) {
@@ -139,40 +142,22 @@ public class TaskNode<O> {
             return this;
         }
 
-        public Builder<O> required() {
-            this.dependencyType = DependencyType.REQUIRED;
-            return this;
-        }
-
-        public Builder<O> optional() {
-            return optional(null);
-        }
-
-        /**
-         * <pre>
-         * 标记为弱依赖
-         * 在没有单独设置fallback，设置defaultValue为fallback的结果
-         * 在没有单独设置timeoutDefault的情况下，设置defaultValue为timeoutDefaultValue
-         * </pre>
-         */
-        public Builder<O> optional(O defaultValue) {
-            this.dependencyType = DependencyType.OPTIONAL;
-            if (this.fallback == null) {
-                this.fallback = t -> defaultValue;
-            }
-            if (!this.hasTimeoutDefault) {
-                this.hasTimeoutDefault = true;
-                this.timeoutDefaultValue = defaultValue;
-            }
-            return this;
-        }
-
         public Builder<O> dependsOn(TaskNode<?>... nodes) {
             for (TaskNode<?> node : nodes) {
                 if (node == null) {
                     throw new IllegalArgumentException("dependency must not be null");
                 }
                 this.dependencies.add(node);
+            }
+            return this;
+        }
+
+        public Builder<O> weakDependsOn(TaskNode<?>... nodes) {
+            for (TaskNode<?> node : nodes) {
+                if (node == null) {
+                    throw new IllegalArgumentException("dependency must not be null");
+                }
+                this.weakDependencies.add(node);
             }
             return this;
         }
@@ -189,14 +174,14 @@ public class TaskNode<O> {
 
     // ======================== Result access (public) ========================
 
-    public O getResult() {
-        if (!executed) {
+    /**
+     * 强依赖时获取结果
+     */
+    public O get() {
+        if (!stateFlag) {
             throw new ParallelFlowException("Task '" + name + "' has not been executed");
         }
         if (!success) {
-            if (isOptional()) {
-                return null;
-            }
             if (exception instanceof ParallelFlowException) {
                 throw (ParallelFlowException) exception;
             }
@@ -205,15 +190,18 @@ public class TaskNode<O> {
         return resultValue;
     }
 
-    public O getResultOrDefault(O defaultValue) {
-        if (!executed || !success) {
+    /**
+     * 弱依赖时获取结果
+     */
+    public O orElse(O defaultValue) {
+        if (!stateFlag || !success) {
             return defaultValue;
         }
-        return resultValue != null ? resultValue : defaultValue;
+        return resultValue;
     }
 
     public boolean isSuccess() {
-        return executed && success;
+        return stateFlag && success;
     }
 
     // ======================== Completion methods (package-private, only called by TaskNodeFuture) ========================
@@ -230,7 +218,7 @@ public class TaskNode<O> {
         this.success = true;
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
-        this.executed = true;
+        this.stateFlag = true;
         return true;
     }
 
@@ -244,7 +232,7 @@ public class TaskNode<O> {
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.executed = true;
+        this.stateFlag = true;
         return true;
     }
 
@@ -256,7 +244,7 @@ public class TaskNode<O> {
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.executed = true;
+        this.stateFlag = true;
         return true;
     }
 
@@ -268,7 +256,7 @@ public class TaskNode<O> {
         this.timedOut = true;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.executed = true;
+        this.stateFlag = true;
         return true;
     }
 
@@ -282,7 +270,7 @@ public class TaskNode<O> {
         this.timedOut = true;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.executed = true;
+        this.stateFlag = true;
         return true;
     }
 
@@ -294,14 +282,6 @@ public class TaskNode<O> {
 
     ContextFunction<O> getAction() {
         return action;
-    }
-
-    DependencyType getDependencyType() {
-        return dependencyType;
-    }
-
-    boolean isOptional() {
-        return dependencyType == DependencyType.OPTIONAL;
     }
 
     long getTimeoutMs() {
@@ -328,13 +308,24 @@ public class TaskNode<O> {
         return dependencies;
     }
 
+    Collection<TaskNode<?>> getWeakDependencies() {
+        return weakDependencies;
+    }
+
+    Collection<TaskNode<?>> getAllDependencies() {
+        return allDependencies;
+    }
+
+    boolean isRequired(TaskNode<?> depNode) {
+        return dependencies.contains(depNode);
+    }
+
     CircuitBreaker getCircuitBreaker() {
         return circuitBreaker;
     }
 
     NodeState snapshotState() {
-        return new NodeState(name, executed, success, isOptional(),
-                fallbackUsed, timedOut, actualRetryCount, durationMs, exception);
+        return new NodeState(name, success, fallbackUsed, timedOut, actualRetryCount, durationMs, exception);
     }
 
     @Override

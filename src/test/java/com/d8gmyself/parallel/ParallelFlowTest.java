@@ -34,15 +34,15 @@ public class ParallelFlowTest {
         });
 
         TaskNode<String> aggregate = TaskNode.<String>builder("aggregate", ctx -> {
-            String p = productInfo.getResult();
-            String pr = price.getResult();
-            String r = reviews.getResult();
+            String p = productInfo.get();
+            String pr = price.get();
+            String r = reviews.get();
             return p + "|" + pr + "|" + r;
         }).dependsOn(productInfo, price, reviews).build();
 
         FlowContext flowCtx = new FlowContext();
         flowCtx.put("input", "SKU-001");
-        String result = ParallelFlow.execute(aggregate, flowCtx);
+        String result = ParallelFlow.start(aggregate, flowCtx);
         assertEquals("Product-SKU-001|Price-99|Reviews-5star", result);
     }
 
@@ -56,24 +56,24 @@ public class ParallelFlowTest {
         });
 
         TaskNode<String> nodeB = TaskNode.<String>builder("B", ctx -> {
-            String a = nodeA.getResult();
+            String a = nodeA.get();
             return "B(" + a + ")";
         }).dependsOn(nodeA).build();
 
         TaskNode<String> nodeC = TaskNode.<String>builder("C", ctx -> {
-            String a = nodeA.getResult();
+            String a = nodeA.get();
             return "C(" + a + ")";
         }).dependsOn(nodeA).build();
 
         TaskNode<String> nodeD = TaskNode.<String>builder("D", ctx -> {
-            String b = nodeB.getResult();
-            String c = nodeC.getResult();
+            String b = nodeB.get();
+            String c = nodeC.get();
             return "D(" + b + "," + c + ")";
         }).dependsOn(nodeB, nodeC).build();
 
         FlowContext flowCtx = new FlowContext();
         flowCtx.put("input", "start");
-        String result = ParallelFlow.execute(nodeD, flowCtx);
+        String result = ParallelFlow.start(nodeD, flowCtx);
         assertEquals("D(B(A(start)),C(A(start)))", result);
     }
 
@@ -85,15 +85,15 @@ public class ParallelFlowTest {
 
         TaskNode<String> optionalService = TaskNode.<String>builder("optional", ctx -> {
             throw new RuntimeException("Service down");
-        }).optional().fallback(ex -> "FallbackData").build();
+        }).fallback(ex -> "FallbackData").build();
 
         TaskNode<String> aggregate = TaskNode.<String>builder("aggregate", ctx -> {
-            String main = mainService.getResult();
-            String opt = optionalService.getResultOrDefault("DefaultData");
+            String main = mainService.get();
+            String opt = optionalService.orElse("DefaultData");
             return main + "|" + opt;
-        }).dependsOn(mainService, optionalService).build();
+        }).dependsOn(mainService).weakDependsOn(optionalService).build();
 
-        String result = ParallelFlow.execute(aggregate);
+        String result = ParallelFlow.start(aggregate);
         assertEquals("MainData|FallbackData", result);
     }
 
@@ -106,11 +106,11 @@ public class ParallelFlowTest {
         });
 
         TaskNode<String> downstream = TaskNode.<String>builder("downstream", ctx -> {
-            return failingService.getResult();
+            return failingService.get();
         }).dependsOn(failingService).build();
 
         try {
-            ParallelFlow.execute(downstream);
+            ParallelFlow.start(downstream);
             fail("Expected ParallelFlowException");
         } catch (ParallelFlowException e) {
             assertTrue(e.getMessage().contains("failed"));
@@ -127,7 +127,7 @@ public class ParallelFlowTest {
         }).timeout(100).build();
 
         try {
-            ParallelFlow.execute(slowTask);
+            ParallelFlow.start(slowTask);
             fail("Expected ParallelFlowException due to timeout");
         } catch (ParallelFlowException e) {
             assertTrue(e.getMessage().contains("timed out") || e.getMessage().contains("failed"));
@@ -147,7 +147,7 @@ public class ParallelFlowTest {
             return "Success on attempt " + attempts.get();
         }).retry(3).build();
 
-        String result = ParallelFlow.execute(retryTask);
+        String result = ParallelFlow.start(retryTask);
         assertEquals("Success on attempt 3", result);
         assertEquals(3, attempts.get());
     }
@@ -166,20 +166,20 @@ public class ParallelFlowTest {
         });
 
         TaskNode<String> b = TaskNode.<String>builder("B", ctx -> {
-            return "B(" + a1.getResult() + "," + a2.getResult() + ")";
+            return "B(" + a1.get() + "," + a2.get() + ")";
         }).dependsOn(a1, a2).build();
 
         TaskNode<String> c = TaskNode.<String>builder("C", ctx -> {
-            return "C(" + a1.getResult() + ")";
+            return "C(" + a1.get() + ")";
         }).dependsOn(a1).build();
 
         TaskNode<String> d = TaskNode.<String>builder("D", ctx -> {
-            return "D(" + b.getResult() + "," + c.getResult() + ")";
+            return "D(" + b.get() + "," + c.get() + ")";
         }).dependsOn(b, c).build();
 
         FlowContext flowCtx = new FlowContext();
         flowCtx.put("input", "X");
-        String result = ParallelFlow.execute(d, flowCtx);
+        String result = ParallelFlow.start(d, flowCtx);
         assertEquals("D(B(A1-X,A2-X),C(A1-X))", result);
     }
 
@@ -217,10 +217,9 @@ public class ParallelFlowTest {
         });
 
         TaskNode<String> merge = TaskNode.<String>builder("merge", ctx ->
-                task1.getResult() + "+" + task2.getResult()
+                task1.get() + "+" + task2.get()
         ).dependsOn(task1, task2).build();
-
-        String result = ParallelFlow.execute(merge, customExecutor, listener);
+        String result = ParallelFlow.builder().listener(listener).executor(customExecutor).build().run(merge);
         assertEquals("Result1+Result2", result);
 
         assertTrue(events.contains("start:task1"));
@@ -250,7 +249,7 @@ public class ParallelFlowTest {
         }).circuitBreaker(cb).build();
 
         try {
-            ParallelFlow.execute(task);
+            ParallelFlow.start(task);
             fail("Expected ParallelFlowException due to open circuit");
         } catch (ParallelFlowException e) {
             assertTrue(e.getMessage().contains("Circuit breaker") || e.getMessage().contains("failed"));
@@ -267,11 +266,11 @@ public class ParallelFlowTest {
         TaskNode<String> a2 = TaskNode.of("A", ctx -> "second");
 
         TaskNode<String> merge = TaskNode.<String>builder("merge", ctx ->
-                a1.getResult() + "+" + a2.getResult()
+                a1.get() + "+" + a2.get()
         ).dependsOn(a1, a2).build();
 
         try {
-            ParallelFlow.execute(merge);
+            ParallelFlow.start(merge);
             fail("Expected ParallelFlowException for duplicate task name");
         } catch (ParallelFlowException e) {
             assertTrue(e.getMessage().contains("Duplicate task name"));
@@ -288,11 +287,11 @@ public class ParallelFlowTest {
         }).timeout(50).build();
 
         TaskNode<String> downstream = TaskNode.<String>builder("downstream", ctx -> {
-            return slow.getResultOrDefault("not-available");
+            return slow.orElse("not-available");
         }).dependsOn(slow).build();
 
         try {
-            ParallelFlow.execute(downstream);
+            ParallelFlow.start(downstream);
             fail("Expected ParallelFlowException due to timeout");
         } catch (ParallelFlowException e) {
             assertTrue(e.getMessage().contains("timed out") || e.getMessage().contains("failed"));
@@ -309,10 +308,10 @@ public class ParallelFlowTest {
         }).timeout(50).timeoutDefault("timeout-default").build();
 
         TaskNode<String> downstream = TaskNode.<String>builder("downstream", ctx -> {
-            return "got:" + slow.getResult();
+            return "got:" + slow.get();
         }).dependsOn(slow).build();
 
-        String result = ParallelFlow.execute(downstream);
+        String result = ParallelFlow.start(downstream);
         assertEquals("got:timeout-default", result);
     }
 
@@ -325,7 +324,7 @@ public class ParallelFlowTest {
             return "slow-result";
         }).timeout(50).timeoutDefault("default-value").build();
 
-        String result = ParallelFlow.execute(slow);
+        String result = ParallelFlow.start(slow);
         assertEquals("default-value", result);
     }
 
@@ -340,7 +339,7 @@ public class ParallelFlowTest {
             throw new RuntimeException("Always fails");
         }).retry(2).fallback(ex -> "FallbackValue").build();
 
-        String result = ParallelFlow.execute(task);
+        String result = ParallelFlow.start(task);
         assertEquals("FallbackValue", result);
         assertEquals(3, attempts.get());
     }
@@ -402,13 +401,13 @@ public class ParallelFlowTest {
         TaskNode<String> main = TaskNode.of("main", ctx -> "MainData");
 
         TaskNode<String> opt = TaskNode.<String>builder("opt", ctx -> "OptData")
-                .optional().build();
+                .build();
 
         TaskNode<String> aggregate = TaskNode.<String>builder("aggregate", ctx ->
-                main.getResult() + "|" + opt.getResult()
-        ).dependsOn(main, opt).build();
+                main.get() + "|" + opt.get()
+        ).dependsOn(main).weakDependsOn(opt).build();
 
-        FlowResult<String> er = ParallelFlow.executeForResult(aggregate);
+        FlowResult<String> er = ParallelFlow.tryStart(aggregate);
 
         // 结果
         assertTrue(er.isSuccess());
@@ -418,17 +417,14 @@ public class ParallelFlowTest {
         assertEquals(3, er.allNodeStates().size());
         assertTrue(er.getNodeState("main").isSuccess());
         assertTrue(er.getNodeState("opt").isSuccess());
-        assertTrue(er.getNodeState("opt").isOptional());
-        assertFalse(er.getNodeState("main").isOptional());
         assertTrue(er.getNodeState("aggregate").isSuccess());
 
         // 总耗时
         assertTrue(er.getDurationMs() >= 0);
 
         // Mermaid 包含 optional 样式
-        String mermaid = er.toMermaid();
-        assertTrue(mermaid.contains("classDef optional"));
-        assertTrue(mermaid.contains("class opt optional"));
+        String mermaid = er.getMermaid();
+        assertTrue(mermaid.contains("-.->"));
         // 无 failed 样式
         assertFalse(mermaid.contains("classDef failed"));
     }
@@ -446,7 +442,7 @@ public class ParallelFlowTest {
                 .flowTimeout(100)
                 .build();
 
-        FlowResult<String> result = flow.runForResult(slow);
+        FlowResult<String> result = flow.tryRun(slow);
 
         assertFalse(result.isSuccess());
         try {
@@ -471,16 +467,16 @@ public class ParallelFlowTest {
 
         TaskNode<String> optBad = TaskNode.<String>builder("optBad", ctx -> {
             throw new RuntimeException("optional boom");
-        }).optional().fallback(ex -> { throw new RuntimeException("fallback also fails"); }).build();
+        }).fallback(ex -> { throw new RuntimeException("fallback also fails"); }).build();
 
         AtomicBoolean targetRealExecuted = new AtomicBoolean(false);
 
         TaskNode<String> target = TaskNode.builder("target", ctx -> {
             targetRealExecuted.set(true);
-            return good.getResult();
-        }).dependsOn(good, bad, optBad).build();
+            return good.get();
+        }).dependsOn(good, bad).weakDependsOn(optBad).build();
 
-        FlowResult<String> er = ParallelFlow.executeForResult(target);
+        FlowResult<String> er = ParallelFlow.tryStart(target);
 
         // 整体失败
         assertFalse(er.isSuccess());
@@ -494,14 +490,11 @@ public class ParallelFlowTest {
         // 各节点状态
         assertTrue(er.getNodeState("good").isSuccess());
         assertFalse(er.getNodeState("bad").isSuccess());
-        assertFalse(er.getNodeState("bad").isOptional());
 
         // Mermaid 包含 failed 和 optionalFailed 样式
-        String mermaid = er.toMermaid();
+        String mermaid = er.getMermaid();
         assertTrue(mermaid.contains("classDef failed"));
         assertTrue(mermaid.contains("class bad failed"));
-        assertTrue(mermaid.contains("classDef optionalFailed"));
-        assertTrue(mermaid.contains("class optBad optionalFailed"));
     }
 
     @Test
@@ -511,7 +504,6 @@ public class ParallelFlowTest {
                     //TimeUnit.MILLISECONDS.sleep(50);
                     return "FastData";
                 }).timeout(100)
-                .optional("")
                 .build();
 
         TaskNode<String> slow = TaskNode.builder("slow", ctx -> {
@@ -519,20 +511,18 @@ public class ParallelFlowTest {
                     return "SlowData";
                 }).timeout(50)
                 .dependsOn(fast)
-                .optional("")
                 .build();
 
 
 
         TaskNode<String> x = TaskNode.builder("x", ctx -> {
-                    return slow.getResult() + "|" + fast.getResult();
+                    return slow.orElse("slowDefault") + "|" + fast.orElse("fastDefault");
                 }).timeout(TimeUnit.SECONDS.toMillis(1))
-                .dependsOn(slow, fast)
+                .weakDependsOn(slow, fast)
                 .build();
 
 
-
-        FlowResult<String> stringFlowResult = ParallelFlow.executeForResult(x, null, TimeUnit.SECONDS.toMillis(3));
+        FlowResult<String> stringFlowResult = ParallelFlow.builder().flowTimeout(TimeUnit.SECONDS.toMillis(3)).build().tryRun(x);
         System.out.println(stringFlowResult.get());
         System.out.println(stringFlowResult.getDurationMs());
     }
