@@ -188,6 +188,7 @@ FlowResult<String> result = ParallelFlow.tryStart(targetNode);
 
 result.isSuccess();                          // 是否成功
 result.get();                                // 获取结果（失败抛异常）
+result.orElse("默认值");                      // 获取结果或默认值（失败不抛异常）
 result.getDurationMs();                      // 总耗时
 
 // 查看各节点状态
@@ -231,7 +232,10 @@ graph BT
 | | `orElse(default)` | 获取结果或默认值（弱依赖场景） |
 | | `isSuccess()` | 是否执行成功 |
 | `FlowContext` | `put(key, value)` / `get(key)` | 跨节点共享参数 |
-| `FlowResult` | `isSuccess()` / `get()` / `getMermaid()` | 执行结果、节点状态、DAG 图 |
+| `FlowResult` | `get()` | 获取结果（失败抛异常） |
+| | `orElse(default)` | 获取结果或默认值（失败不抛异常） |
+| | `isSuccess()` / `getMermaid()` / `getDurationMs()` | 执行状态、DAG 图、总耗时 |
+| | `getNodeState(name)` / `allNodeStates()` | 单个/全部节点状态快照 |
 
 ## 注意事项
 

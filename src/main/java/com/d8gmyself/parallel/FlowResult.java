@@ -40,6 +40,10 @@ public class FlowResult<O> {
         return resultValue;
     }
 
+    public O orElse(O defaultValue) {
+        return success ? resultValue : defaultValue;
+    }
+
     public boolean isSuccess() {
         return success;
     }
