@@ -118,6 +118,17 @@ TaskNode<String> task = TaskNode.<String>builder("task", ctx -> {
 
 `timeoutDefault` 不仅在真实执行超时时生效；如果节点未按预期被调度（例如 Flow 提前失败后的取消、线程池拒绝提交），也会按默认值兜底，并在 `NodeState` 中体现为 `timedOut=true`。
 
+### optional 语法糖
+
+```java
+// 等价于同时设置 timeoutDefault + fallback
+TaskNode<String> optionalTask = TaskNode.<String>builder("optionalTask", ctx -> {
+    return remoteCall();
+}).optional("默认值").build();
+```
+
+`optional(defaultValue)` 用于快速声明“失败或超时都降级为默认值”的节点，适合可选数据源场景。
+
 ### 重试
 
 ```java
@@ -204,7 +215,7 @@ for (NodeState state : result.allNodeStates().values()) {
     state.getException();                    // 异常信息
 }
 
-// Mermaid DAG 图（失败节点红色标记，弱依赖虚线箭头）
+// Mermaid DAG 图（失败节点红色标记，fallback 节点橙色标记，弱依赖虚线箭头）
 System.out.println(result.getMermaid());
 ```
 
@@ -230,9 +241,11 @@ graph BT
 | | `tryRun(target)` / `tryRun(target, ctx)` | 实例执行，返回 `FlowResult` |
 | `TaskNode` | `of(name, action)` | 快捷创建无配置节点 |
 | | `builder(name, action)...build()` | Builder 创建，可配置超时/重试/依赖等 |
+| | `builder(...).optional(defaultValue).build()` | Builder 语法糖：同时设置 timeoutDefault + fallback |
 | | `get()` | 获取结果（强依赖场景） |
 | | `orElse(default)` | 获取结果或默认值（弱依赖场景） |
 | | `isSuccess()` | 是否执行成功 |
+| | `isFallbackUsed()` | 是否使用过 fallback 或 timeoutDefault |
 | `FlowContext` | `put(key, value)` / `get(key)` | 跨节点共享参数 |
 | `FlowResult` | `get()` | 获取结果（失败抛异常） |
 | | `orElse(default)` | 获取结果或默认值（失败不抛异常） |
