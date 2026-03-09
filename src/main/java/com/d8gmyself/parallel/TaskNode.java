@@ -224,15 +224,15 @@ public class TaskNode<O> {
         return stateFlag.compareAndSet(INIT_FLAG, USED_FLAG);
     }
 
-    boolean transfer2ResultWriting() {
+    private boolean transfer2ResultWriting() {
         return stateFlag.compareAndSet(USED_FLAG, RESULT_WRITING_FLAG);
     }
 
-    boolean transfer2Completed() {
+    private boolean transfer2Completed() {
         return stateFlag.compareAndSet(RESULT_WRITING_FLAG, COMPLETED_FLAG);
     }
 
-    boolean isCompleted() {
+    private boolean isCompleted() {
         return stateFlag.get() == COMPLETED_FLAG;
     }
 
@@ -243,15 +243,14 @@ public class TaskNode<O> {
     }
 
     boolean completeSuccess(O value, int retryCount, long durationMs) {
-        if (!stateFlag.compareAndSet(USED_FLAG, RESULT_WRITING_FLAG)) {
+        if (!transfer2ResultWriting()) {
             return false;
         }
         this.resultValue = value;
         this.success = true;
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
-        this.stateFlag.set(COMPLETED_FLAG);
-        return true;
+        return transfer2Completed();
     }
 
     boolean completeFallback(O value, int retryCount, long durationMs, Throwable exception) {
