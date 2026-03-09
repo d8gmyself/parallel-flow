@@ -156,6 +156,16 @@ public class TaskNode<O> {
             return this;
         }
 
+        /**
+         * 同时设置timeoutDefault和fallback
+         */
+        public Builder<O> optional(O defaultValue) {
+            this.hasTimeoutDefault = true;
+            this.timeoutDefaultValue = defaultValue;
+            this.fallback = t -> defaultValue;
+            return this;
+        }
+
         public Builder<O> dependsOn(TaskNode<?>... nodes) {
             for (TaskNode<?> node : nodes) {
                 if (node == null) {
@@ -216,6 +226,10 @@ public class TaskNode<O> {
 
     public boolean isSuccess() {
         return isCompleted() && success;
+    }
+
+    public boolean isFallbackUsed() {
+        return isCompleted() && fallbackUsed;
     }
 
     // ======================== stateFlag 状态机管理，就这几个状态，不再复杂化 ========================

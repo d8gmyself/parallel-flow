@@ -200,6 +200,7 @@ public class ParallelFlow {
         StringBuilder sb = new StringBuilder("graph BT\n");
 
         Set<String> failedNames = new LinkedHashSet<>();
+        Set<String> fallbackNames = new LinkedHashSet<>();
 
         // 声明节点并分类
         for (TaskNode<?> node : allNodes) {
@@ -207,6 +208,8 @@ public class ParallelFlow {
             sb.append("    ").append(name).append('\n');
             if (!node.isSuccess()) {
                 failedNames.add(name);
+            } else if (node.isFallbackUsed()) {
+                fallbackNames.add(name);
             }
         }
 
@@ -221,12 +224,19 @@ public class ParallelFlow {
         }
 
         boolean hasFailed = !failedNames.isEmpty();
-
         if (hasFailed) {
             sb.append("    classDef failed stroke:#ff0000\n");
         }
         for (String name : failedNames) {
             sb.append("    class ").append(name).append(" failed\n");
+        }
+
+        boolean hasFallback = !fallbackNames.isEmpty();
+        if (hasFallback) {
+            sb.append("    classDef fallback stroke:#ffa500\n");
+        }
+        for (String name : fallbackNames) {
+            sb.append("    class ").append(name).append(" fallback\n");
         }
         return sb.toString();
     }
