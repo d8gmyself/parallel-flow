@@ -241,7 +241,7 @@ graph BT
 
 1. **TaskNode 禁止复用**：每个 `TaskNode` 实例只能参与一次 Flow 执行，重复使用会抛出异常。需要重新执行时，请重新构建 `TaskNode`
 2. **节点名称唯一**：同一个 DAG 中不允许存在同名的不同 `TaskNode` 实例
-3. **避免嵌套 ParallelFlow**：不要在 TaskNode 的 action 中嵌套调用 `ParallelFlow`，可能导致线程池死锁，如果要嵌套，主要线程池分配
+3. **避免嵌套 ParallelFlow**：不要在 TaskNode 的 action 中嵌套调用 `ParallelFlow`，可能导致线程池死锁，如果要嵌套，注意线程池分配策略
 4. **超时不会 interrupt**：框架的超时机制不会中断任务线程。如果 action 中有长时间 IO 操作，需要自行在 IO 层面控制超时（如 HTTP 连接超时）
 5. **RejectedExecutionHandler**：如果自定义线程池使用了 `DiscardPolicy` 等丢弃策略，任务可能被静默丢弃，最终由 Flow 超时兜底
 6. **默认超时**：节点默认超时 10 秒，Flow 默认超时 30 秒（不指定时）
