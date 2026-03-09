@@ -8,7 +8,7 @@
 
 - **声明式依赖**：通过 `dependsOn` / `weakDependsOn` 描述任务间的依赖关系，框架自动推导并行度
 - **强弱依赖分离**：强依赖失败则下游取消；弱依赖失败不影响下游执行
-- **一次性执行**：每个 `TaskNode` 仅可执行一次，通过 CAS 保证状态写入的原子性，避免并发下的状态污染
+- **一次性执行**：每个 `TaskNode` 仅可参与一次 Flow 编排尝试，收集 DAG 时会标记为已使用，通过 CAS 保证状态写入的原子性，避免并发下的状态污染
 - **不中断超时**：超时机制不会 interrupt 任务线程，避免误打断 IO 操作，由任务自行控制内部超时
 - **拓扑排序 + CompletableFuture 编排**：拓扑排序后构建 Future 依赖链，无依赖的节点自动并行提交
 
@@ -110,11 +110,13 @@ TaskNode<String> task = TaskNode.<String>builder("task", ctx -> {
     return slowApi.call();
 }).timeout(500).build();  // 500ms 超时
 
-// 超时后使用默认值（不抛异常，视为成功）
+// 超时或未按预期调度时使用默认值（不抛异常，视为成功）
 TaskNode<String> task = TaskNode.<String>builder("task", ctx -> {
     return slowApi.call();
 }).timeout(100).timeoutDefault("兜底值").build();
 ```
+
+`timeoutDefault` 不仅在真实执行超时时生效；如果节点未按预期被调度（例如 Flow 提前失败后的取消、线程池拒绝提交），也会按默认值兜底，并在 `NodeState` 中体现为 `timedOut=true`。
 
 ### 重试
 
@@ -239,13 +241,14 @@ graph BT
 
 ## 注意事项
 
-1. **TaskNode 禁止复用**：每个 `TaskNode` 实例只能参与一次 Flow 执行，重复使用会抛出异常。需要重新执行时，请重新构建 `TaskNode`
+1. **TaskNode 禁止复用**：每个 `TaskNode` 实例只能参与一次 Flow 编排尝试（DAG 收集阶段即标记为已使用），重复使用会抛出异常。需要重新执行时，请重新构建 `TaskNode`
 2. **节点名称唯一**：同一个 DAG 中不允许存在同名的不同 `TaskNode` 实例
 3. **避免嵌套 ParallelFlow**：不要在 TaskNode 的 action 中嵌套调用 `ParallelFlow`，可能导致线程池死锁，如果要嵌套，注意线程池分配策略
 4. **超时不会 interrupt**：框架的超时机制不会中断任务线程。如果 action 中有长时间 IO 操作，需要自行在 IO 层面控制超时（如 HTTP 连接超时）
-5. **RejectedExecutionHandler**：如果自定义线程池使用了 `DiscardPolicy` 等丢弃策略，任务可能被静默丢弃，最终由 Flow 超时兜底
+5. **RejectedExecutionHandler**：如果自定义线程池使用了 `DiscardPolicy` 等丢弃策略，任务可能被静默丢弃。无 `timeoutDefault` 的节点通常会导致 Flow 失败/超时；有 `timeoutDefault` 的节点会按默认值兜底
 6. **默认超时**：节点默认超时 10 秒，Flow 默认超时 30 秒（不指定时）
 7. **循环依赖**：Builder 模式在结构上天然防止循环依赖（引用的节点必须先创建），框架拓扑排序中仍保留防御性检测
+8. **参数非空约束**：`start/run/tryStart/tryRun` 的 `target` 与 `ctx`（传参重载）都不能为空，为空会直接抛 `NullPointerException`
 
 ## 环境要求
 
