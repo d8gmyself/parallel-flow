@@ -39,7 +39,7 @@ class TaskNodeFuture<O> {
         long effectiveTimeout = taskNode.getTimeoutMs() > 0 ? taskNode.getTimeoutMs() : defaultTimeoutMs;
         if (effectiveTimeout > 0) {
             final ScheduledFuture<?> timer = SCHEDULER.schedule(() -> {
-                if (taskNode.isCompleted()) {
+                if (taskNode.completionClaimed()) {
                     return;
                 }
                 ParallelFlowException timeoutEx = new ParallelFlowException(
@@ -58,7 +58,7 @@ class TaskNodeFuture<O> {
     }
 
     private void executeWithRetry(FlowContext ctx) {
-        if (isCompleted()) {
+        if (taskNode.completionClaimed()) {
             return;
         }
         long taskStart = System.currentTimeMillis();
@@ -71,7 +71,7 @@ class TaskNodeFuture<O> {
         fireEvent(taskNode.getName(), 0, 0, null, null, EventType.START);
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            if (isCompleted()) {
+            if (taskNode.completionClaimed()) {
                 return;
             }
 
@@ -103,7 +103,7 @@ class TaskNodeFuture<O> {
                     cb.recordFailure(taskNode.getName());
                 }
 
-                if (attempt < maxAttempts && !taskNode.isCompleted()) {
+                if (attempt < maxAttempts && !taskNode.completionClaimed()) {
                     long duration = System.currentTimeMillis() - taskStart;
                     fireEvent(taskNode.getName(), duration, attempt, t, null, EventType.RETRY);
                 }
@@ -132,10 +132,6 @@ class TaskNodeFuture<O> {
     }
 
     // ======================== future helpers ========================
-
-    boolean isCompleted() {
-        return taskNode.isCompleted();
-    }
 
     boolean completeSuccess(O value, int retryCount, long durationMs, int attempt) {
         if (taskNode.completeSuccess(value, retryCount, durationMs)) {
@@ -186,7 +182,10 @@ class TaskNodeFuture<O> {
     }
 
     /**
+     * <pre>
      * 仅用在Flow维度异常结束、线程池提交task异常时complete
+     * 没能按预期进行调度，先暂时按超时的逻辑处理，语义不是很合理，但是先这么处理
+     * </pre>
      */
     boolean completeException(Throwable exception) {
         if (taskNode.hasTimeoutDefault()) {

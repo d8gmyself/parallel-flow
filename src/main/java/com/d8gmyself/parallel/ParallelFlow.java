@@ -119,6 +119,11 @@ public class ParallelFlow {
 
     @SuppressWarnings("unchecked")
     private <O> FlowResult<O> doRun(TaskNode<O> target, FlowContext ctx) {
+
+        // 前置校验，为了更语义化的NPE
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ctx, "ctx");
+
         long startTime = System.currentTimeMillis();
 
         // 1. Collect all reachable nodes
@@ -236,10 +241,6 @@ public class ParallelFlow {
     }
 
     private static void collectDfs(TaskNode<?> node, Map<String, TaskNode<?>> visited, List<TaskNode<?>> result) {
-        //TaskNode禁止复用
-        if (node.isCompleted()) {
-            throw new ParallelFlowException("Task '" + node.getName() + "' is completed, create new TaskNode per flow");
-        }
         TaskNode<?> existing = visited.get(node.getName());
         if (existing != null) {
             if (existing != node) {
@@ -251,6 +252,10 @@ public class ParallelFlow {
         visited.put(node.getName(), node);
         for (TaskNode<?> dep : node.getAllDependencies()) {
             collectDfs(dep, visited, result);
+        }
+        //TaskNode禁止复用
+        if (!node.transfer2Used()) {
+            throw new ParallelFlowException("Task '" + node.getName() + "' is already used, create new TaskNode per flow");
         }
         result.add(node);
     }

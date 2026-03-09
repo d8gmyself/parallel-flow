@@ -1,7 +1,9 @@
 package com.d8gmyself.parallel;
 
-import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 /**
@@ -47,13 +49,25 @@ public class TaskNode<O> {
     // ======================== Runtime state (written once by executor or timeout thread) ========================
 
     /**
-     * 状态只能写入一次，通过该字段CAS控制，谁抢到，谁可以写
+     * 新建，未绑定到任何flow中
      */
-    private final AtomicBoolean completed = new AtomicBoolean(false);
+    private static final int INIT_FLAG = 0;
     /**
-     * 用于保证状态可见性，默认false，task完成后，在更新完所有状态后，记得execute设置为true
+     * 已经被某个flow流程扫描绑定
      */
-    private volatile boolean stateFlag;
+    private static final int USED_FLAG = 1;
+    /**
+     * 已经执行完，正在写入结果状态
+     */
+    private static final int RESULT_WRITING_FLAG = 11;
+    /**
+     * 已完成
+     */
+    private static final int COMPLETED_FLAG = 12;
+    /**
+     * 用于保证状态可见性+禁止复用，CAS直接控制
+     */
+    private final AtomicInteger stateFlag = new AtomicInteger(INIT_FLAG);
     private volatile boolean success;
     private volatile boolean fallbackUsed;
     private volatile boolean timedOut;
@@ -178,7 +192,7 @@ public class TaskNode<O> {
      * 强依赖时获取结果
      */
     public O get() {
-        if (!stateFlag) {
+        if (!isCompleted()) {
             throw new ParallelFlowException("Task '" + name + "' has not been executed");
         }
         if (!success) {
@@ -194,36 +208,54 @@ public class TaskNode<O> {
      * 弱依赖时获取结果
      */
     public O orElse(O defaultValue) {
-        if (!stateFlag || !success) {
+        if (!isCompleted() || !success) {
             return defaultValue;
         }
         return resultValue;
     }
 
     public boolean isSuccess() {
-        return stateFlag && success;
+        return isCompleted() && success;
+    }
+
+    // ======================== stateFlag 状态机管理，就这几个状态，不再复杂化 ========================
+
+    boolean transfer2Used() {
+        return stateFlag.compareAndSet(INIT_FLAG, USED_FLAG);
+    }
+
+    boolean transfer2ResultWriting() {
+        return stateFlag.compareAndSet(USED_FLAG, RESULT_WRITING_FLAG);
+    }
+
+    boolean transfer2Completed() {
+        return stateFlag.compareAndSet(RESULT_WRITING_FLAG, COMPLETED_FLAG);
+    }
+
+    boolean isCompleted() {
+        return stateFlag.get() == COMPLETED_FLAG;
     }
 
     // ======================== Completion methods (package-private, only called by TaskNodeFuture) ========================
 
-    boolean isCompleted() {
-        return completed.get();
+    boolean completionClaimed() {
+        return stateFlag.get() >= RESULT_WRITING_FLAG;
     }
 
     boolean completeSuccess(O value, int retryCount, long durationMs) {
-        if (!completed.compareAndSet(false, true)) {
+        if (!stateFlag.compareAndSet(USED_FLAG, RESULT_WRITING_FLAG)) {
             return false;
         }
         this.resultValue = value;
         this.success = true;
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
-        this.stateFlag = true;
+        this.stateFlag.set(COMPLETED_FLAG);
         return true;
     }
 
     boolean completeFallback(O value, int retryCount, long durationMs, Throwable exception) {
-        if (!completed.compareAndSet(false, true)) {
+        if (!transfer2ResultWriting()) {
             return false;
         }
         this.resultValue = value;
@@ -232,36 +264,33 @@ public class TaskNode<O> {
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.stateFlag = true;
-        return true;
+        return transfer2Completed();
     }
 
     boolean completeFailure(int retryCount, long durationMs, Throwable exception) {
-        if (!completed.compareAndSet(false, true)) {
+        if (!transfer2ResultWriting()) {
             return false;
         }
         this.success = false;
         this.actualRetryCount = retryCount;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.stateFlag = true;
-        return true;
+        return transfer2Completed();
     }
 
     boolean completeTimeout(long durationMs, Throwable exception) {
-        if (!completed.compareAndSet(false, true)) {
+        if (!transfer2ResultWriting()) {
             return false;
         }
         this.success = false;
         this.timedOut = true;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.stateFlag = true;
-        return true;
+        return transfer2Completed();
     }
 
     boolean completeTimeoutDefault(long durationMs, Throwable exception) {
-        if (!completed.compareAndSet(false, true)) {
+        if (!transfer2ResultWriting()) {
             return false;
         }
         this.resultValue = this.timeoutDefaultValue;
@@ -270,8 +299,7 @@ public class TaskNode<O> {
         this.timedOut = true;
         this.durationMs = durationMs;
         this.exception = exception;
-        this.stateFlag = true;
-        return true;
+        return transfer2Completed();
     }
 
     // ======================== Definition getters ========================
