@@ -1,8 +1,9 @@
 # parallel-flow
 
-一个轻量级的异步编排框架，零外部依赖，基于 DAG（有向无环图）实现任务的自动并行调度。
-
-适用于需要并行聚合多个数据源的场景，例如商品详情页聚合、多接口并行调用等 Fan-out/Fan-in 模式。
+一个轻量级的异步编排框架，零外部依赖，基于 DAG（有向无环图）实现任务的自动并行调度。  
+适用于需要并行聚合多个数据源的场景，例如商品详情页聚合、多接口并行调用等 Fan-out/Fan-in 模式。  
+在保证健壮性和并发性能的基础上，其它优先级为 **可读性 >= 易用性 > 通用性**。  
+**让设计严格贴合问题边界，不为少数需求把主路径做重。**
 
 ## 核心设计
 
@@ -256,14 +257,22 @@ graph BT
 
 1. **TaskNode 禁止复用**：每个 `TaskNode` 实例只能参与一次 Flow 编排尝试（DAG 收集阶段即标记为已使用），重复使用会抛出异常。需要重新执行时，请重新构建 `TaskNode`
 2. **节点名称唯一**：同一个 DAG 中不允许存在同名的不同 `TaskNode` 实例
-3. **避免嵌套 ParallelFlow**：不要在 TaskNode 的 action 中嵌套调用 `ParallelFlow`，可能导致线程池死锁，如果要嵌套，注意线程池分配策略
+3. **避免嵌套 ParallelFlow**：不要在 TaskNode 的 action 中嵌套调用 `ParallelFlow`，可能导致线程池死锁，如果要嵌套，注意线程池分配策略。  
+   > 更好的方案应该是，被依赖的Flow拆分成编排和执行两部分，编排部分直接提供最终的聚合TaskNode，作为子流程供依赖方进行编排，由最外层的ParallelFlow统一调度，这样就没有嵌套问题了。
 4. **超时不会 interrupt**：框架的超时机制不会中断任务线程。如果 action 中有长时间 IO 操作，需要自行在 IO 层面控制超时（如 HTTP 连接超时）
 5. **RejectedExecutionHandler**：如果自定义线程池使用了 `DiscardPolicy` 等丢弃策略，任务可能被静默丢弃。无 `timeoutDefault` 的节点通常会导致 Flow 失败/超时；有 `timeoutDefault` 的节点会按默认值兜底
 6. **默认超时**：节点默认超时 10 秒，Flow 默认超时 30 秒（不指定时）
 7. **循环依赖**：Builder 模式在结构上天然防止循环依赖（引用的节点必须先创建），框架拓扑排序中仍保留防御性检测
-8. **参数非空约束**：`start/run/tryStart/tryRun` 的 `target` 与 `ctx`（传参重载）都不能为空，为空会直接抛 `NullPointerException`
+8. **参数非空约束**：`start/run/tryStart/tryRun` 的 `target` 与 `ctx`（传参重载）都不能为空，为空会直接抛 `NullPointerException`  
+9. **FlowContext**：Flow上下文，用于透传一些全局信息，禁止滥用，TaskNode之间的数据依赖显式传递，直接使用lambda闭包传递或者在XXXTaskNodeFactory的create中通过TaskNode<DEP> xxxNode参数显式指定，并要确保返回的TaskNode的dep指定了这项依赖
 
 ## 环境要求
 
 - Java 8+
 - 零外部运行时依赖
+
+## 能力边界问题
+
+当前ParallelFlow只做静态DAG，如果涉及某个节点内部的MapReduce当前暂不处理，因为这类case会让框架的复杂的剧烈上升，没想清楚前先不动...  
+> 这种某个节点的MapReduce典型的场景就是A节点获取到了某个集合，B节点依赖A节点的结果，将其内部的每一个element展开，执行各自的flow，最后汇总所有结果，是一个典型的flatMap/MapReduce过程。  
+> 这类过程当前的取舍是：交由TaskNode内部的action自行处理。  
