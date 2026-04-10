@@ -2,6 +2,9 @@ package com.d8gmyself.parallel;
 
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 流程上下文，建议存放一些全局信息
+ */
 public class FlowContext {
 
     private final ConcurrentHashMap<String, Object> params = new ConcurrentHashMap<>();

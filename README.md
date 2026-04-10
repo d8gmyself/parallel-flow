@@ -265,6 +265,9 @@ graph BT
 7. **循环依赖**：Builder 模式在结构上天然防止循环依赖（引用的节点必须先创建），框架拓扑排序中仍保留防御性检测
 8. **参数非空约束**：`start/run/tryStart/tryRun` 的 `target` 与 `ctx`（传参重载）都不能为空，为空会直接抛 `NullPointerException`  
 9. **FlowContext**：Flow上下文，用于透传一些全局信息，禁止滥用，TaskNode之间的数据依赖显式传递，直接使用lambda闭包传递或者在XXXTaskNodeFactory的create中通过TaskNode<DEP> xxxNode参数显式指定，并要确保返回的TaskNode的dep指定了这项依赖
+10. **强弱依赖和optional**：optional/fallback/timeoutDefault会影响当前节点的结果，所以理论上表达弱依赖有两种方式，一种是在Node上兜底，一种是通过weakDependsOn表明，二者设计的初衷不太相同。简单理解就是前者作用在DAG的某个点上，后者作用在某条边上。
+  > 这里的核心是，使用的时候要理解好optional/fallback/timeoutDefault、weakDependsOn/dependsOn、get/orElse之间的关系  
+  > fallback设计目的是失败降级，timeoutDefault设计目的是超时兜底，optional是通过语法将默认值同时对二者生效
 
 ## 环境要求
 

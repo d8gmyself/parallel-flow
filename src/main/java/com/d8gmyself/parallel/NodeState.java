@@ -55,7 +55,14 @@ public class NodeState {
 
     @Override
     public String toString() {
-        return "NodeState{name='" + name + "', success=" + isSuccess()
-                + ", duration=" + durationMs + "ms}";
+        return "NodeState{" +
+                "name='" + name + '\'' +
+                ", success=" + success +
+                ", fallbackUsed=" + fallbackUsed +
+                ", timedOut=" + timedOut +
+                ", actualRetryCount=" + actualRetryCount +
+                ", durationMs=" + durationMs +
+                ", exception=" + exception +
+                '}';
     }
 }

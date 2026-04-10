@@ -330,7 +330,7 @@ public class ParallelFlow {
 
         Collection<TaskNode<?>> deps = node.getAllDependencies();
 
-        TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture((TaskNode) node, defaultTaskTimeoutMs, taskLifecycleListener);
+        TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture(node, defaultTaskTimeoutMs, taskLifecycleListener);
         if (deps.isEmpty()) {
             try {
                 executor.execute(() -> taskNodeFuture.execute(ctx));

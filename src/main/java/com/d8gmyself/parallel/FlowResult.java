@@ -28,7 +28,7 @@ public class FlowResult<O> {
     }
 
     /**
-     * 获取目标节点结果，失败时抛出 ParallelFlowException
+     * 获取结果，失败时抛出 ParallelFlowException
      */
     public O get() {
         if (!success) {

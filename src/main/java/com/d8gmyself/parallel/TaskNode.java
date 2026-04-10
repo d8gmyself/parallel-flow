@@ -8,15 +8,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * <pre>
- * 并行任务节点，包括元信息和运行状态，每次执行前应该新建，禁止复用
+ * 并行任务节点，包括元信息和运行状态，每次执行前应该新建，禁止复用（可以复用action或TaskNode的构建逻辑）
  * 元数据通过Builder构建，构建后不可变；运行时状态由executor写入
  * 状态数据仅可写入一次，比如先超时，后完成，那完成的结果也直接丢弃，最终按超时记
  * 如果一个TaskNode同时存在dependencies和weakDependencies中，那优先认为是强依赖
  * 如果action或者fallback中有长IO操作，自行控制IO的超时逻辑，taskNode的timeout机制不会进行interrupt，避免误打断
  *
- * 关于成功的判定：仅在抛出异常的时候才算失败，核心其实就两种失败情况
+ * 关于成功的判定：仅在抛出异常的时候才算失败，核心就两种失败情况
  *   - 超时 & 无超时默认值
  *   - action失败 & (无fallback | fallback失败)
+ *
+ * 如果直接配置了optional，从节点的执行逻辑上看，当前节点不会失败，除非
+ *   - 线程池调度异常（触发饱和策略等）
+ *   - 有强依赖执行失败（需要仔细思考强弱依赖）
  * </pre>
  * @param <O> 节点返回值
  */
@@ -199,7 +203,7 @@ public class TaskNode<O> {
     // ======================== Result access (public) ========================
 
     /**
-     * 强依赖时获取结果
+     * 强依赖时获取结果，失败会抛异常
      */
     public O get() {
         if (!isCompleted()) {
@@ -215,7 +219,7 @@ public class TaskNode<O> {
     }
 
     /**
-     * 弱依赖时获取结果
+     * 弱依赖时获取结果，失败返回默认值
      */
     public O orElse(O defaultValue) {
         if (!isCompleted() || !success) {

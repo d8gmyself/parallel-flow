@@ -41,14 +41,10 @@ public class DefaultCircuitBreaker implements CircuitBreaker {
     public boolean allowRequest(String taskName) {
         CircuitState cs = getState(taskName);
         switch (cs.state.get()) {
-            case CLOSED:
-                return true;
             case OPEN:
                 long elapsed = System.currentTimeMillis() - cs.lastFailureTime.get();
                 if (elapsed >= resetTimeoutMs) {
-                    if (cs.state.compareAndSet(State.OPEN, State.HALF_OPEN)) {
-                        return true; // probe request
-                    }
+                    return cs.state.compareAndSet(State.OPEN, State.HALF_OPEN); // probe request
                 }
                 return false;
             case HALF_OPEN:
