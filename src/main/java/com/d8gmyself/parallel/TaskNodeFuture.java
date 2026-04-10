@@ -113,7 +113,7 @@ class TaskNodeFuture<O> {
         // All attempts exhausted — try fallback
         if (taskNode.getFallback() != null) {
             try {
-                O fallbackResult = taskNode.getFallback().apply(lastException);
+                O fallbackResult = taskNode.getFallback().apply(ctx, lastException);
 
                 long duration = System.currentTimeMillis() - taskStart;
                 completeFallback(fallbackResult, retryCount, duration, lastException, attemptsMade);

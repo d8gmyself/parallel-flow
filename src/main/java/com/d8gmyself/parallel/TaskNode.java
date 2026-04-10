@@ -33,7 +33,7 @@ public class TaskNode<O> {
 
     @FunctionalInterface
     public interface FallbackFunction<R> {
-        R apply(Throwable ex) throws Exception;
+        R apply(FlowContext ctx, Throwable ex) throws Exception;
     }
 
     // ======================== Definition (immutable) ========================
@@ -166,7 +166,7 @@ public class TaskNode<O> {
         public Builder<O> optional(O defaultValue) {
             this.hasTimeoutDefault = true;
             this.timeoutDefaultValue = defaultValue;
-            this.fallback = t -> defaultValue;
+            this.fallback = (ctx, t) -> defaultValue;
             return this;
         }
 

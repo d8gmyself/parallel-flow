@@ -85,7 +85,7 @@ public class ParallelFlowTest {
 
         TaskNode<String> optionalService = TaskNode.<String>builder("optional", ctx -> {
             throw new RuntimeException("Service down");
-        }).fallback(ex -> "FallbackData").build();
+        }).fallback((ctx, ex) -> "FallbackData").build();
 
         TaskNode<String> aggregate = TaskNode.<String>builder("aggregate", ctx -> {
             String main = mainService.get();
@@ -337,7 +337,7 @@ public class ParallelFlowTest {
         TaskNode<String> task = TaskNode.<String>builder("retryFallback", ctx -> {
             attempts.incrementAndGet();
             throw new RuntimeException("Always fails");
-        }).retry(2).fallback(ex -> "FallbackValue").build();
+        }).retry(2).fallback((ctx, ex) -> "FallbackValue").build();
 
         String result = ParallelFlow.start(task);
         assertEquals("FallbackValue", result);
@@ -467,7 +467,7 @@ public class ParallelFlowTest {
 
         TaskNode<String> optBad = TaskNode.<String>builder("optBad", ctx -> {
             throw new RuntimeException("optional boom");
-        }).fallback(ex -> { throw new RuntimeException("fallback also fails"); }).build();
+        }).fallback((ctx, ex) -> { throw new RuntimeException("fallback also fails"); }).build();
 
         AtomicBoolean targetRealExecuted = new AtomicBoolean(false);
 
