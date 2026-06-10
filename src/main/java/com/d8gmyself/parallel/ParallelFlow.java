@@ -2,6 +2,7 @@ package com.d8gmyself.parallel;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Function;
 
 /**
  * <pre>
@@ -17,14 +18,16 @@ import java.util.concurrent.*;
 public class ParallelFlow {
 
     //静态方法默认使用
-    private static final ParallelFlow DEFAULT = new ParallelFlow(ForkJoinPool.commonPool(), null, 0, 0);
+    private static final ParallelFlow DEFAULT = new ParallelFlow(ForkJoinPool.commonPool(), null, 0, 0, null);
 
     private final Executor executor;
     private final long flowTimeoutMs;
     private final long defaultTaskTimeoutMs;
     private final TaskLifecycleListener taskLifecycleListener;
+    private final Function<String, Long> taskTimeoutResolver;
 
-    private ParallelFlow(Executor executor, TaskLifecycleListener listener, long defaultTaskTimeoutMs, long flowTimeoutMs) {
+    private ParallelFlow(Executor executor, TaskLifecycleListener listener, long defaultTaskTimeoutMs,
+                         long flowTimeoutMs, Function<String, Long> taskTimeoutResolver) {
         if (defaultTaskTimeoutMs <= 0) {
             defaultTaskTimeoutMs = TimeUnit.SECONDS.toMillis(10);
         }
@@ -38,6 +41,7 @@ public class ParallelFlow {
         this.flowTimeoutMs = flowTimeoutMs;
         this.executor = executor;
         this.taskLifecycleListener = listener;
+        this.taskTimeoutResolver = taskTimeoutResolver;
     }
 
     // ======================== Static simple API ========================
@@ -71,6 +75,7 @@ public class ParallelFlow {
         private TaskLifecycleListener listener;
         private long defaultTaskTimeoutMs;
         private long flowTimeoutMs;
+        private Function<String, Long> taskTimeoutResolver;
 
         public Builder executor(Executor executor) {
             this.executor = executor;
@@ -92,8 +97,17 @@ public class ParallelFlow {
             return this;
         }
 
+        /**
+         * 按节点名解析超时时间的 SPI，最高优先级。
+         * 返回 >0 强制覆盖节点级与 flow 级超时；返回 null 表示不覆盖该节点，回退到既有逻辑。
+         */
+        public Builder taskTimeoutResolver(Function<String, Long> taskTimeoutResolver) {
+            this.taskTimeoutResolver = taskTimeoutResolver;
+            return this;
+        }
+
         public ParallelFlow build() {
-            return new ParallelFlow(executor, listener, defaultTaskTimeoutMs, flowTimeoutMs);
+            return new ParallelFlow(executor, listener, defaultTaskTimeoutMs, flowTimeoutMs, taskTimeoutResolver);
         }
     }
 
@@ -330,7 +344,7 @@ public class ParallelFlow {
 
         Collection<TaskNode<?>> deps = node.getAllDependencies();
 
-        TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture(node, defaultTaskTimeoutMs, taskLifecycleListener);
+        TaskNodeFuture<?> taskNodeFuture = new TaskNodeFuture(node, defaultTaskTimeoutMs, taskTimeoutResolver, taskLifecycleListener);
         if (deps.isEmpty()) {
             try {
                 executor.execute(() -> taskNodeFuture.execute(ctx));

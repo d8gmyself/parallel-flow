@@ -1,6 +1,7 @@
 package com.d8gmyself.parallel;
 
 import java.util.concurrent.*;
+import java.util.function.Function;
 
 class TaskNodeFuture<O> {
 
@@ -13,13 +14,16 @@ class TaskNodeFuture<O> {
 
     private final TaskLifecycleListener listener;
     private final long defaultTimeoutMs;
+    private final Function<String, Long> timeoutResolver;
     private final CompletableFuture<O> future;
     private final TaskNode<O> taskNode;
 
-    TaskNodeFuture(TaskNode<O> taskNode, long defaultTimeoutMs, TaskLifecycleListener listener) {
+    TaskNodeFuture(TaskNode<O> taskNode, long defaultTimeoutMs,
+                   Function<String, Long> timeoutResolver, TaskLifecycleListener listener) {
         this.taskNode = taskNode;
         this.listener = listener;
         this.defaultTimeoutMs = defaultTimeoutMs;
+        this.timeoutResolver = timeoutResolver;
         this.future = new CompletableFuture<>();
     }
 
@@ -35,8 +39,8 @@ class TaskNodeFuture<O> {
     }
 
     private void registerTimeout() {
-        // Timeout handling: node-level timeout > flow-level defaultTaskTimeoutMs
-        long effectiveTimeout = taskNode.getTimeoutMs() > 0 ? taskNode.getTimeoutMs() : defaultTimeoutMs;
+        // Timeout handling: resolver > node-level timeout > flow-level defaultTaskTimeoutMs
+        long effectiveTimeout = resolveEffectiveTimeout();
         if (effectiveTimeout > 0) {
             final ScheduledFuture<?> timer = SCHEDULER.schedule(() -> {
                 if (taskNode.completionClaimed()) {
@@ -55,6 +59,27 @@ class TaskNodeFuture<O> {
             }, effectiveTimeout, TimeUnit.MILLISECONDS);
             future.whenComplete((r, e) -> timer.cancel(false));
         }
+    }
+
+    /**
+     * 解析生效超时，优先级：
+     * resolver(name) 返回 >0 → 用 resolver 值
+     * 否则 node.timeout > 0  → 用节点级值
+     * 否则                   → 用 flow.defaultTimeoutMs
+     * resolver 返回 null/≤0/抛异常 均按"不覆盖"回退
+     */
+    private long resolveEffectiveTimeout() {
+        if (timeoutResolver != null) {
+            try {
+                Long resolved = timeoutResolver.apply(taskNode.getName());
+                if (resolved != null && resolved > 0) {
+                    return resolved;
+                }
+            } catch (Throwable ignored) {
+                // resolver 异常不得拖垮 flow，回退到既有逻辑
+            }
+        }
+        return taskNode.getTimeoutMs() > 0 ? taskNode.getTimeoutMs() : defaultTimeoutMs;
     }
 
     private void executeWithRetry(FlowContext ctx) {

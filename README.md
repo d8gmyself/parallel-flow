@@ -119,6 +119,24 @@ TaskNode<String> task = TaskNode.<String>builder("task", ctx -> {
 
 `timeoutDefault` 不仅在真实执行超时时生效；如果节点未按预期被调度（例如 Flow 提前失败后的取消、线程池拒绝提交），也会按默认值兜底，并在 `NodeState` 中体现为 `timedOut=true`。
 
+#### 动态调整节点超时（taskTimeoutResolver）
+
+节点级 `timeout()` 在构建后不可变。如果需要在 Flow 维度按节点名统一注入/覆盖超时（例如从配置中心动态调参），可以在 Builder 上配置 `taskTimeoutResolver`：
+
+```java
+ParallelFlow flow = ParallelFlow.builder()
+    .taskTimeoutResolver(nodeName -> configCenter.getTimeoutMs(nodeName)) // 返回 null 表示不覆盖
+    .build();
+```
+
+`taskTimeoutResolver` 是最高优先级，按节点名解析超时：
+
+- 返回 `> 0`：强制覆盖该节点的 `timeout()` 与 flow 默认超时
+- 返回 `null`：不覆盖该节点，回退到既有逻辑（节点级 `timeout()` → flow 默认）
+- 返回 `≤ 0` 或抛出异常：按"不覆盖"处理回退（异常会被吞掉，不影响 Flow 执行）
+
+每个节点仅解析一次。优先级链：`taskTimeoutResolver(name) → node.timeout() → defaultTaskTimeoutMs`。
+
 ### optional 语法糖
 
 ```java
@@ -170,6 +188,7 @@ ParallelFlow flow = ParallelFlow.builder()
     .executor(Executors.newFixedThreadPool(20))    // 自定义线程池
     .defaultTaskTimeoutMs(5000)                     // 节点默认超时 5s
     .flowTimeout(60000)                             // 整体流程超时 60s
+    .taskTimeoutResolver(name -> null)              // 按节点名动态覆盖超时，返回 null 表示不覆盖
     .listener(new TaskLifecycleListener() {
         @Override
         public void onStart(TaskEvent event) {

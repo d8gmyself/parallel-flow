@@ -527,4 +527,103 @@ public class ParallelFlowTest {
         System.out.println(stringFlowResult.getDurationMs());
     }
 
+    // ========== taskTimeoutResolver ==========
+
+    @Test
+    public void testResolverOverridesNodeTimeout() {
+        TaskNode<String> slow = TaskNode.<String>builder("slow", ctx -> {
+            Thread.sleep(120);
+            return "done";
+        }).timeout(50).build();
+
+        ParallelFlow flow = ParallelFlow.builder()
+                .taskTimeoutResolver(name -> "slow".equals(name) ? 500L : null)
+                .build();
+
+        FlowResult<String> result = flow.tryRun(slow);
+        assertTrue(result.isSuccess());
+        assertEquals("done", result.get());
+    }
+
+    @Test
+    public void testResolverNullFallsBackToNodeTimeout() {
+        TaskNode<String> slow = TaskNode.<String>builder("slow", ctx -> {
+            Thread.sleep(120);
+            return "done";
+        }).timeout(50).build();
+
+        ParallelFlow flow = ParallelFlow.builder()
+                .taskTimeoutResolver(name -> null)
+                .build();
+
+        FlowResult<String> result = flow.tryRun(slow);
+        assertFalse(result.isSuccess());
+    }
+
+    @Test
+    public void testResolverNullFallsBackToFlowDefault() {
+        TaskNode<String> slow = TaskNode.of("slow", ctx -> {
+            Thread.sleep(120);
+            return "done";
+        });
+
+        ParallelFlow flow = ParallelFlow.builder()
+                .defaultTaskTimeoutMs(50)
+                .taskTimeoutResolver(name -> null)
+                .build();
+
+        FlowResult<String> result = flow.tryRun(slow);
+        assertFalse(result.isSuccess());
+    }
+
+    @Test
+    public void testResolverNonPositiveFallsBack() {
+        TaskNode<String> slow = TaskNode.<String>builder("slow", ctx -> {
+            Thread.sleep(120);
+            return "done";
+        }).timeout(50).build();
+
+        ParallelFlow flow = ParallelFlow.builder()
+                .taskTimeoutResolver(name -> 0L)
+                .build();
+
+        FlowResult<String> result = flow.tryRun(slow);
+        assertFalse(result.isSuccess());
+    }
+
+    @Test
+    public void testResolverExceptionFallsBack() {
+        TaskNode<String> slow = TaskNode.<String>builder("slow", ctx -> {
+            Thread.sleep(80);
+            return "done";
+        }).timeout(500).build();
+
+        ParallelFlow flow = ParallelFlow.builder()
+                .taskTimeoutResolver(name -> {
+                    throw new RuntimeException("resolver boom");
+                })
+                .build();
+
+        FlowResult<String> result = flow.tryRun(slow);
+        assertTrue(result.isSuccess());
+        assertEquals("done", result.get());
+    }
+
+    @Test
+    public void testResolverCalledOncePerNode() {
+        AtomicInteger calls = new AtomicInteger(0);
+        TaskNode<String> node = TaskNode.of("n", ctx -> "ok");
+
+        ParallelFlow flow = ParallelFlow.builder()
+                .taskTimeoutResolver(name -> {
+                    calls.incrementAndGet();
+                    return 500L;
+                })
+                .build();
+
+        FlowResult<String> result = flow.tryRun(node);
+        assertTrue(result.isSuccess());
+        assertEquals(1, calls.get());
+    }
+
 }
